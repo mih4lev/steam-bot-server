@@ -1,6 +1,9 @@
 // API
+const EventEmitter = require('events');
+const emitter = new EventEmitter();
 const express = require(`express`);
 const app = express();
+const expressWS = require('express-ws')(app);
 app.use(express.json({ extended: true }));
 require('dotenv').config();
 
@@ -80,10 +83,11 @@ manager.on(`receivedOfferChanged`, (offer, oldState) => {
 	CanceledBySecondFactor: 10 - Either party canceled the offer via email/mobile confirmation
 	InEscrow: 11 - The trade has been placed on hold
 */
-manager.on(`sentOfferChanged`, (offer, oldState) => {
-	console.log(`sentOfferChanged`);
-	console.log(offer);
-	console.log(oldState);
+manager.on(`sentOfferChanged`, (offer) => {
+	const items = offer.itemsToReceive.map((itemData) => formatItemData({ itemData }));
+	const data = { state: offer.state, items };
+	emitter.emit(`socketMessage`, JSON.stringify(data));
+	if (offer.state !== 3) offer.decline();
 });
 
 manager.on(`sentOfferCanceled`, (offer, reason) => {
@@ -207,6 +211,7 @@ app.get(`/api/item/:marketName/price`, async (request, response) => {
 });
 
 // http://localhost:8888/api/trade/sell/76561198055031516/[17886618551]
+// https://steamcommunity.com/tradeoffer/new/?partner=94765788&token=Xkh5V4FQ for test
 app.get(`/api/trade/sell/:steamID/:items`, async (request, response) => {
 	const { params: { steamID, items }} = request;
 	const data = await createSellOffer({ steamID, items });
@@ -215,6 +220,12 @@ app.get(`/api/trade/sell/:steamID/:items`, async (request, response) => {
 
 app.get(`/api/trade/buy`, async (request, response) => {
 
+});
+
+app.ws(`/api/messages`, (WS, request) => {
+	emitter.on(`socketMessage`, (message) => {
+		WS.send(message);
+	});
 });
 
 // http://cdn.steamcommunity.com/economy/image/ + icon_url

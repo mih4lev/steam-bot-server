@@ -11,6 +11,7 @@
     "dependencies": {
         "dotenv": "^10.0.0",
         "express": "^4.17.1",
+        "express-ws": "^5.0.2",
         "steam-totp": "^2.1.1",
         "steam-tradeoffer-manager": "^2.10.3",
         "steam-user": "^4.19.12",
