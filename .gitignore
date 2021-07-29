@@ -1,0 +1,8 @@
+# ignore node_modules dir
+/node_modules/
+# ignore WebStorm settings
+/.idea/
+# ignore ENV files
+.env
+# ignore DS files
+.DS_Store
