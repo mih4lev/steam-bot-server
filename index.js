@@ -5,6 +5,16 @@ const express = require(`express`);
 const app = express();
 const expressWS = require('express-ws')(app);
 app.use(express.json({ extended: true }));
+
+// Add headers
+app.use(function (request, response, next) {
+	response.setHeader('Access-Control-Allow-Origin', 'http://localhost:8080');
+	response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
+	response.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,content-type');
+	response.setHeader('Access-Control-Allow-Credentials', true);
+	next();
+});
+
 require('dotenv').config();
 
 // STEAM
@@ -126,7 +136,11 @@ const formatItemData = ({ itemData, priceData }) => {
 	} = itemData;
 	return {
 		assetid, name, name_color, type, market_name, market_hash_name, 
-		marketable, icons: { icon_url, icon_url_large }, tags, price
+		marketable, tags, price,
+		icons: { 
+			thumb: `http://cdn.steamcommunity.com/economy/image/` + icon_url,
+			image: `http://cdn.steamcommunity.com/economy/image/` + icon_url_large,
+		}
 	};
 };
 
@@ -192,6 +206,7 @@ const createSellOffer = ({ steamID, items }) => {
 // http://localhost:8888/api/inventory/76561198055031516
 app.get(`/api/inventory/:steamID`, async (request, response) => {
 	const { params: { steamID }} = request;
+	// const steamID = `https://steamcommunity.com/tradeoffer/new/?partner=94765788&token=Xkh5V4FQ`;
 	const data = await requestInventory({ steamID });
 	response.json(data);
 });
@@ -210,10 +225,10 @@ app.get(`/api/item/:marketName/price`, async (request, response) => {
 	response.json(data);
 });
 
-// http://localhost:8888/api/trade/sell/76561198055031516/[17886618551]
-// https://steamcommunity.com/tradeoffer/new/?partner=94765788&token=Xkh5V4FQ for test
-app.get(`/api/trade/sell/:steamID/:items`, async (request, response) => {
-	const { params: { steamID, items }} = request;
+// http://localhost:8888/api/trade/sell/
+// body - steamID (ID or Trade link) | items - array of items assetid
+app.post(`/api/trade/sell`, express.json({type: '*/*'}), async (request, response) => {
+	const { body: { steamID, items }} = request;
 	const data = await createSellOffer({ steamID, items });
 	response.json(data);
 });
