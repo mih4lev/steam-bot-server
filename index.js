@@ -138,8 +138,8 @@ const formatItemData = ({ itemData, priceData }) => {
 		assetid, name, name_color, type, market_name, market_hash_name, 
 		marketable, tags, price,
 		icons: { 
-			thumb: `http://cdn.steamcommunity.com/economy/image/` + icon_url,
-			image: `http://cdn.steamcommunity.com/economy/image/` + icon_url_large,
+			thumb: (icon_url) ? process.env.STEAM_CDN + icon_url : null,
+			image: (icon_url_large) ? process.env.STEAM_CDN + icon_url_large : null,
 		}
 	};
 };
@@ -163,11 +163,15 @@ const requestInventoryWithPrice = ({ steamID }) => {
 			const itemPromises = inventory.map((itemData) => {
 				const { market_hash_name } = itemData;
 				return new Promise((resolve) => {
-					community.getMarketItem(730, market_hash_name, (error, priceData) => {
-						if (error) resolve([]);
-						resolve(priceData);
-					});
-				}).then((priceData) => formatItemData({ itemData, priceData }));
+					const timeout = (Math.random() + Math.random()) * 1000;
+					setTimeout(() => {
+						community.getMarketItem(730, market_hash_name, (error, priceData) => {
+							if (error) resolve([]);
+							resolve(priceData);
+						});
+					}, timeout);
+				})
+				.then((priceData) => formatItemData({ itemData, priceData }));
 			});
 			Promise.all(itemPromises).then((result) => resolve(result));
 		});
