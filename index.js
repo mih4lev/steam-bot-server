@@ -8,7 +8,7 @@ app.use(express.json({ extended: true }));
 
 // Add headers
 app.use(function (request, response, next) {
-	response.setHeader('Access-Control-Allow-Origin', 'http://localhost:8080');
+	response.setHeader('Access-Control-Allow-Origin', '*');
 	response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
 	response.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,content-type');
 	response.setHeader('Access-Control-Allow-Credentials', true);
@@ -80,22 +80,9 @@ manager.on(`receivedOfferChanged`, (offer, oldState) => {
 	});
 });
 
-/*
-	Invalid: 1,
-	Active: 2 - This trade offer has been sent, neither party has acted on it yet.
-	Accepted: 3 - The trade offer was accepted by the recipient and items were exchanged.
-	Countered: 4 - The recipient made a counter offer
-	Expired: 5 - The trade offer was not accepted before the expiration date
-	Canceled: 6 - The sender cancelled the offer
-	Declined: 7 - The recipient declined the offer
-	InvalidItems: 8 - Some of the items in the offer are no longer available (indicated by the missing flag in the output)
-	CreatedNeedsConfirmation: 9 - The offer hasn't been sent yet and is awaiting further confirmation
-	CanceledBySecondFactor: 10 - Either party canceled the offer via email/mobile confirmation
-	InEscrow: 11 - The trade has been placed on hold
-*/
 manager.on(`sentOfferChanged`, (offer) => {
 	const items = offer.itemsToReceive.map((itemData) => formatItemData({ itemData }));
-	const data = { state: offer.state, items };
+	const data = { offer, items };
 	emitter.emit(`socketMessage`, JSON.stringify(data));
 	if (offer.state !== 3) offer.decline();
 });
@@ -126,7 +113,7 @@ setTimeout(() => {
 	steam.logOn(steamOptions);
 }, 10000);
 
-// misc functions
+// MISC functions
 
 const formatItemData = ({ itemData, priceData }) => {
 	const price = (priceData) ? priceData.lowestPrice / 100 : null;
@@ -144,7 +131,7 @@ const formatItemData = ({ itemData, priceData }) => {
 	};
 };
 
-// api functions
+// API functions
 
 const requestInventory = ({ steamID }) => {
 	return new Promise((resolve) => {
@@ -199,7 +186,8 @@ const createSellOffer = ({ steamID, items }) => {
 			});
 			offer.send((error, status) => {
 				if (error) resolve(error);
-				resolve(status);
+				const data = { offer, status };
+				resolve(data);
 			});
 		});
 	});
