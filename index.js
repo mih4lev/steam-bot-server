@@ -4,6 +4,8 @@ const emitter = new EventEmitter();
 const express = require(`express`);
 const app = express();
 const expressWS = require('express-ws')(app);
+const GlobalOffensive = require('globaloffensive');
+const fetch = require('node-fetch');
 app.use(express.json({ extended: true }));
 
 // Add headers
@@ -22,8 +24,10 @@ const SteamUser = require(`steam-user`);
 const SteamCommunity = require(`steamcommunity`);
 const TradeManager = require(`steam-tradeoffer-manager`);
 const steamTOTP = require(`steam-totp`);
+const { SteamID } = require('steamcommunity');
 
 const steam = new SteamUser();
+const CSGO = new GlobalOffensive(steam);
 
 const steamOptions = { 
 	accountName: process.env.STEAM_ACCOUNT, 
@@ -46,6 +50,8 @@ const exitWithError = (error) => {
 
 steam.on(`loggedOn`, () => {
 	console.log(`Logged into Steam`);
+	steam.setPersona(1);
+	steam.gamesPlayed([730]);
 });
 
 steam.on(`webSession`, (sessionID, cookies) => {
@@ -54,6 +60,7 @@ steam.on(`webSession`, (sessionID, cookies) => {
 		console.log(`Got API key: ` + manager.apiKey);
 	});
 	community.setCookies(cookies);
+	community.startConfirmationChecker(20000, process.env.STEAM_IDENTITY_SECRET);
 });
 
 manager.on(`newOffer`, (offer) => {
@@ -81,10 +88,9 @@ manager.on(`receivedOfferChanged`, (offer, oldState) => {
 });
 
 manager.on(`sentOfferChanged`, (offer) => {
-	const items = offer.itemsToReceive.map((itemData) => formatItemData({ itemData }));
-	const data = { offer, items };
+	const type = (offer.itemsToGive.length > 0) ? `skins` : `exchange`;
+	const data = { offer, type };
 	emitter.emit(`socketMessage`, JSON.stringify(data));
-	if (offer.state !== 3) offer.decline();
 });
 
 manager.on(`sentOfferCanceled`, (offer, reason) => {
@@ -107,23 +113,40 @@ steam.on(`newItems`, (count) => {
 	console.log(`newItems`, count);
 });
 
+CSGO.on(`connectedToGC`, () => {
+	console.log(`connectedToGC`);
+});
+
+// UPDATE ITEM PRICE EVERY 1 sec FROM market.csgo.com
+
+let priceData = {};
+const requestPrice = async () => {
+	try {
+		const response = await fetch(`https://market.csgo.com/api/v2/prices/RUB.json`);
+		priceData = await response.json();
+	} catch (error) {
+		console.log(error);
+	}
+};
+requestPrice();
+setInterval(requestPrice, 60 * 1000);
+
 // steam login
 
-setTimeout(() => {
-	steam.logOn(steamOptions);
-}, 10000);
+steam.logOn(steamOptions);
 
 // MISC functions
 
-const formatItemData = ({ itemData, priceData }) => {
-	const price = (priceData) ? priceData.lowestPrice / 100 : null;
+const formatItemData = ({ item, market }) => {
+	if (!item) return false;
 	const { 
 		assetid, name, name_color, type, market_name, market_hash_name, 
-		marketable, tags, icon_url, icon_url_large
-	} = itemData;
+		marketable, tags, icon_url, icon_url_large, market_actions
+	} = item;
+	const { 0: { price } = { price: null }} = market;
 	return {
 		assetid, name, name_color, type, market_name, market_hash_name, 
-		marketable, tags, price,
+		marketable, tags, price, market_actions, 
 		icons: { 
 			thumb: (icon_url) ? process.env.STEAM_CDN + icon_url : null,
 			image: (icon_url_large) ? process.env.STEAM_CDN + icon_url_large : null,
@@ -131,53 +154,18 @@ const formatItemData = ({ itemData, priceData }) => {
 	};
 };
 
+const getSteamID = (tradeLink) => {
+	const partnerID = new URL(tradeLink).searchParams.get(`partner`);
+	const steamID = SteamID.fromIndividualAccountID(partnerID).getSteamID64();
+	return steamID;
+};
+
 // API functions
 
-const requestInventory = ({ steamID }) => {
+const createSellOffer = ({ tradeLink, items }) => {
+	console.log(items);
 	return new Promise((resolve) => {
-		community.getUserInventoryContents(steamID, 730, 2, true, `russian`, (error, inventory) => {
-			if (error) return resolve(error);
-			const items = inventory.map((itemData) => formatItemData({ itemData }));
-			resolve(items);
-		});
-	});
-};
-
-const requestInventoryWithPrice = ({ steamID }) => {
-	return new Promise((resolve) => {
-		community.getUserInventoryContents(steamID, 730, 2, true, `russian`, (error, inventory) => {
-			if (error) return resolve(error);
-			const itemPromises = inventory.map((itemData) => {
-				const { market_hash_name } = itemData;
-				return new Promise((resolve) => {
-					const timeout = (Math.random() + Math.random()) * 1000;
-					setTimeout(() => {
-						community.getMarketItem(730, market_hash_name, (error, priceData) => {
-							if (error) resolve([]);
-							resolve(priceData);
-						});
-					}, timeout);
-				})
-				.then((priceData) => formatItemData({ itemData, priceData }));
-			});
-			Promise.all(itemPromises).then((result) => resolve(result));
-		});
-	});
-};
-
-const requestItemPrice = ({ marketName }) => {
-	return new Promise((resolve) => {
-		community.getMarketItem(730, marketName, (error, item) => {
-			if (error) resolve(error);
-			const { lowestPrice } = item;
-			resolve({ price: lowestPrice / 100 });
-		});
-	});
-};
-
-const createSellOffer = ({ steamID, items }) => {
-	return new Promise((resolve) => {
-		const offer = manager.createOffer(steamID);
+		const offer = manager.createOffer(tradeLink);
 		offer.loadPartnerInventory(730, 2, (error, inventory) => {
 			if (error) resolve(error);
 			inventory.forEach((item) => {
@@ -193,48 +181,174 @@ const createSellOffer = ({ steamID, items }) => {
 	});
 };
 
+const createBuyOffer = ({ steamID, items }) => {
+	return new Promise((resolve) => {
+		const offer = manager.createOffer(steamID);
+		manager.loadInventory(730, 2, true, (error, inventory) => {
+			if (error) resolve(error);
+			inventory.forEach((item) => {
+				if (!items.includes(item.assetid)) return false;
+				offer.addMyItem(item);
+			});
+			offer.send((error, status) => {
+				if (error) resolve(error);
+				const data = { offer, status };
+				resolve(data);
+			});
+		});
+	});
+};
+
+const requestUserInventory = ({ steamID }) => {
+	return new Promise((resolve) => {
+		community.getUserInventoryContents(steamID, 730, 2, true, `russian`, (error, inventory) => {
+			if (error) return resolve(error);
+			const items = inventory.map((item) => {
+				if (!item.assetid) return false;
+				const market = priceData.items.filter(({ market_hash_name }) => item.market_hash_name === market_hash_name );
+				return formatItemData({ item, market });
+			});
+			resolve(items);
+		});
+	});
+};
+
+const requestSteamPrice = ({ marketName }) => {
+	return new Promise((resolve) => {
+		community.getMarketItem(730, marketName, (error, market) => {
+			if (error) resolve(error);
+			const price = (market) ? market.lowestPrice / 100 : null;
+			resolve({ price });
+		});
+	});
+};
+
+const requestItemDetail = ({ gameLink }) => {
+	return new Promise((resolve) => {
+		CSGO.inspectItem(gameLink, (error, market) => {
+			if (error) resolve(error);
+			console.log(market);
+			resolve({ market });
+		});
+	});
+};
+
 // EXPRESS
 
 // http://localhost:8888/api/inventory/76561198055031516
 app.get(`/api/inventory/:steamID`, async (request, response) => {
-	const { params: { steamID }} = request;
-	// const steamID = `https://steamcommunity.com/tradeoffer/new/?partner=94765788&token=Xkh5V4FQ`;
-	const data = await requestInventory({ steamID });
-	response.json(data);
+	try {
+		const { params: { steamID }} = request;
+		const data = await requestUserInventory({ steamID });
+		response.json(data);
+	} catch (error) {
+		console.log(error);
+		response.json({});
+	}
 });
 
-// http://localhost:8888/api/inventory/76561198055031516/price
-app.get(`/api/inventory/:steamID/price`, async (request, response) => {
-	const { params: { steamID }} = request;
-	const data = await requestInventoryWithPrice({ steamID });
-	response.json(data);
+// http://localhost:8888/api/skins
+app.get(`/api/skins`, async (request, response) => {
+	try {
+		const steamID = process.env.STEAM_BOT_ID;
+		const data = await requestUserInventory({ steamID });
+		response.json(data);
+	} catch (error) {
+		console.log(error);
+		response.json({});
+	}
+});
+
+// http://localhost:8888/api/inventory
+app.post(`/api/inventory`, express.json({type: '*/*'}), async (request, response) => {
+	try {
+		const { body: { tradeLink }} = request;
+		const data = await requestUserInventory({ steamID: getSteamID(tradeLink) });
+		response.json(data);
+	} catch (error) {
+		console.log(error);
+		response.json({});
+	}
 });
 
 // http://localhost:8888/api/item/Galil%20AR%20%7C%20Signal%20(Field-Tested)/price
 app.get(`/api/item/:marketName/price`, async (request, response) => {
-	const { params: { marketName }} = request;
-	const data = await requestItemPrice({ marketName });
-	response.json(data);
+	try {
+		const { params: { marketName }} = request;
+		const data = await requestSteamPrice({ marketName });
+		response.json(data);
+	} catch (error) {
+		console.log(error);
+		response.json({});
+	}
+});
+
+// http://localhost:8888/api/item/detail
+app.post(`/api/item/:gameLink/detail`, express.json({type: '*/*'}), async (request, response) => {
+	try {
+		const { body: { gameLink }} = request;
+		const data = await requestItemDetail({ gameLink });
+		response.json(data);
+	} catch (error) {
+		console.log(error);
+		response.json({});
+	}
 });
 
 // http://localhost:8888/api/trade/sell/
 // body - steamID (ID or Trade link) | items - array of items assetid
 app.post(`/api/trade/sell`, express.json({type: '*/*'}), async (request, response) => {
-	const { body: { steamID, items }} = request;
-	const data = await createSellOffer({ steamID, items });
-	response.json(data);
+	try {
+		const { body: { tradeLink, items }} = request;
+		const data = await createSellOffer({ tradeLink, items });
+		response.json(data);
+	} catch (error) {
+		console.log(error);
+		response.json({});
+	}
 });
 
+// http://localhost:8888/api/trade/buy/
+// body - steamID (ID or Trade link) | items - array of items assetid
+app.post(`/api/trade/buy`, express.json({type: '*/*'}), async (request, response) => {
+	try {
+		const { body: { steamID, items }} = request;
+		const data = await createBuyOffer({ steamID, items });
+		response.json(data);
+	} catch (error) {
+		console.log(error);
+		response.json({});
+	}
+});
+
+// http://localhost:8888/api/trade/buy/
+// body - steamID (ID or Trade link) | items - array of items assetid
 app.get(`/api/trade/buy`, async (request, response) => {
-
+	try {
+		const { body: { steamID, items }} = request;
+		const data = await createSellOffer({ steamID, items });
+		response.json(data);
+	} catch (error) {
+		console.log(error);
+		response.json({});
+	}
 });
 
+// http://localhost:8888/api/price
+app.get(`/api/price`, async (request, response) => {
+	try {
+		response.json(priceData);
+	} catch (error) {
+		console.log(error);
+		response.json({});
+	}
+});
+
+// sockets link to 
 app.ws(`/api/messages`, (WS, request) => {
 	emitter.on(`socketMessage`, (message) => {
 		WS.send(message);
 	});
 });
-
-// http://cdn.steamcommunity.com/economy/image/ + icon_url
 
 app.listen(process.env.PORT);
