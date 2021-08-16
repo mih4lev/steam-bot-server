@@ -1,5 +1,5 @@
 require(`dotenv`).config();
-const mysql = require(`promise-mysql`);
+const mysql = require(`mysql2/promise`);
 
 const { DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_PORT } = process.env;
 
@@ -20,9 +20,9 @@ const requestDB = async (query) => {
 
 const DB = async (query, params) => {
     const connection = await mysql.createConnection(mysqlOptions);
-    const response = await connection.query(query, params);
+    const [ rows, fields ] = await connection.query(query, params);
     connection.end();
-    return await response;
+    return await rows;
 };
 
 const singleDB = async (query, params) => {

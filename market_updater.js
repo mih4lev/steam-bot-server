@@ -198,7 +198,9 @@ const updateItem = async ({ assetid, ...incomeData }) => {
 
 const updateItemsData = async () => {
     const items = await DB(`SELECT * FROM market_items ORDER BY steam_update ASC`);
+    if (!items.length) return false;
     for (const item of items) {
+        console.log(item.market_name);
         if (
             item.market_name.includes(`Case`) || 
             item.market_name.includes(`Graffiti`) || 
