@@ -6,3 +6,5 @@
 .env
 # ignore DS files
 .DS_Store
+#
+package-lock.json
