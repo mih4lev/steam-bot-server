@@ -6,6 +6,11 @@ const app = express();
 const expressWS = require('express-ws')(app);
 const GlobalOffensive = require('globaloffensive');
 const fetch = require('node-fetch');
+const request = require('request');
+const cheerio = require('cheerio');
+
+const { DB, singleDB } = require("./db");
+
 app.use(express.json({ extended: true }));
 
 // Add headers
@@ -90,6 +95,7 @@ manager.on(`receivedOfferChanged`, (offer, oldState) => {
 manager.on(`sentOfferChanged`, (offer) => {
 	const type = (offer.itemsToGive.length > 0) ? `skins` : `exchange`;
 	const data = { offer, type };
+	// if (offer.state === 3) updateUserBalance(offer.itemsToReceive, `sell`);
 	emitter.emit(`socketMessage`, JSON.stringify(data));
 });
 
@@ -137,23 +143,6 @@ steam.logOn(steamOptions);
 
 // MISC functions
 
-const formatItemData = ({ item, market }) => {
-	if (!item) return false;
-	const { 
-		assetid, name, name_color, type, market_name, market_hash_name, 
-		marketable, tags, icon_url, icon_url_large, market_actions
-	} = item;
-	const { 0: { price } = { price: null }} = market;
-	return {
-		assetid, name, name_color, type, market_name, market_hash_name, 
-		marketable, tags, price, market_actions, 
-		icons: { 
-			thumb: (icon_url) ? process.env.STEAM_CDN + icon_url : null,
-			image: (icon_url_large) ? process.env.STEAM_CDN + icon_url_large : null,
-		}
-	};
-};
-
 const getSteamID = (tradeLink) => {
 	const partnerID = new URL(tradeLink).searchParams.get(`partner`);
 	const steamID = SteamID.fromIndividualAccountID(partnerID).getSteamID64();
@@ -162,11 +151,33 @@ const getSteamID = (tradeLink) => {
 
 // API functions
 
+// const updateUserBalance = async (offerItems, action, soc_id) => {
+// 	const queryItems = offerItems.map((item) => item.market_hash_name);
+// 	const query = `SELECT * FROM market_items WHERE market_hash_name IN (?)`;
+// 	const response = await DB(query, [ queryItems ]);
+// 	switch (action) {
+// 		case 'exchange':
+// 			console.log(`exchange`);
+// 			const value = response.reduce((sum, { market_price_ru }) => sum + Number(market_price_ru), 0);
+// 			const balanceQuery = `UPDATE windrop.cms_users SET balance = balance + ? WHERE soc_id = ?`;
+// 			const balanceResponse = await DB(balanceQuery, [ value, soc_id ]);
+// 			console.log(balanceResponse);
+// 			break;
+// 		case 'skins':
+// 			console.log(`skins`);
+// 			const value = response.reduce((sum, { price_ru }) => sum + Number(price_ru), 0);
+// 			const balanceQuery = `UPDATE windrop.cms_users SET balance = balance - ? WHERE soc_id = ?`;
+// 			const balanceResponse = await DB(balanceQuery, [ value, soc_id ]);
+// 			console.log(balanceResponse);
+// 			break;
+// 	}
+// };
+
 const createSellOffer = ({ tradeLink, items }) => {
-	console.log(items);
 	return new Promise((resolve) => {
 		const offer = manager.createOffer(tradeLink);
 		offer.loadPartnerInventory(730, 2, (error, inventory) => {
+			console.log(inventory);
 			if (error) resolve(error);
 			inventory.forEach((item) => {
 				if (!items.includes(item.assetid)) return false;
@@ -203,22 +214,16 @@ const requestUserInventory = ({ steamID }) => {
 	return new Promise((resolve) => {
 		community.getUserInventoryContents(steamID, 730, 2, true, `russian`, (error, inventory) => {
 			if (error) return resolve(error);
-			const items = inventory.map((item) => {
-				if (!item.assetid) return false;
-				const market = priceData.items.filter(({ market_hash_name }) => item.market_hash_name === market_hash_name );
-				return formatItemData({ item, market });
-			});
-			resolve(items);
+			resolve(inventory);
 		});
 	});
 };
 
 const requestSteamPrice = ({ marketName }) => {
 	return new Promise((resolve) => {
-		community.getMarketItem(730, marketName, (error, market) => {
+		community.getMarketItem(730, marketName, 5, (error, market) => {
 			if (error) resolve(error);
-			const price = (market) ? market.lowestPrice / 100 : null;
-			resolve({ price });
+			resolve(market);
 		});
 	});
 };
@@ -227,9 +232,27 @@ const requestItemDetail = ({ gameLink }) => {
 	return new Promise((resolve) => {
 		CSGO.inspectItem(gameLink, (error, market) => {
 			if (error) resolve(error);
-			console.log(market);
 			resolve({ market });
 		});
+	});
+};
+
+const collectItemsData = (data) => {
+	return new Promise(async (resolve) => {
+		try {
+			const queryItems = data.map((item) => item.market_hash_name);
+			const query = `SELECT * FROM market_items WHERE market_hash_name IN (?) && rarity IS NOT NULL && rarity_num >= 2`;
+			const response = await DB(query, [ queryItems ]);
+			const items = response.map((item) => {
+				const searchItem = data.filter((userItem) => userItem.market_hash_name === item.market_hash_name);
+				item.assetid = searchItem[0].assetid;
+				return item;
+			});
+			resolve(items);
+		} catch (error) {
+			console.log(error);
+			resolve([]);
+		}
 	});
 };
 
@@ -264,7 +287,9 @@ app.post(`/api/inventory`, express.json({type: '*/*'}), async (request, response
 	try {
 		const { body: { tradeLink }} = request;
 		const data = await requestUserInventory({ steamID: getSteamID(tradeLink) });
-		response.json(data);
+		const items = await collectItemsData(data);
+		// console.log(items);
+		response.json(items);
 	} catch (error) {
 		console.log(error);
 		response.json({});
@@ -300,6 +325,7 @@ app.post(`/api/item/:gameLink/detail`, express.json({type: '*/*'}), async (reque
 app.post(`/api/trade/sell`, express.json({type: '*/*'}), async (request, response) => {
 	try {
 		const { body: { tradeLink, items }} = request;
+		console.log(tradeLink, items);
 		const data = await createSellOffer({ tradeLink, items });
 		response.json(data);
 	} catch (error) {
@@ -321,19 +347,6 @@ app.post(`/api/trade/buy`, express.json({type: '*/*'}), async (request, response
 	}
 });
 
-// http://localhost:8888/api/trade/buy/
-// body - steamID (ID or Trade link) | items - array of items assetid
-app.get(`/api/trade/buy`, async (request, response) => {
-	try {
-		const { body: { steamID, items }} = request;
-		const data = await createSellOffer({ steamID, items });
-		response.json(data);
-	} catch (error) {
-		console.log(error);
-		response.json({});
-	}
-});
-
 // http://localhost:8888/api/price
 app.get(`/api/price`, async (request, response) => {
 	try {
@@ -344,11 +357,48 @@ app.get(`/api/price`, async (request, response) => {
 	}
 });
 
+app.get(`/api/market`, async (request, response) => {
+	const query = `
+		SELECT * FROM market_items 
+		WHERE 
+			market_price_ru <= price_ru && market_volume > 0 && 
+			rarity IS NOT NULL && rarity_num IS NOT NULL 
+		ORDER BY sold_24h DESC;
+	`;
+	const items = await DB(query);
+	response.json(items);
+});
+
 // sockets link to 
 app.ws(`/api/messages`, (WS, request) => {
 	emitter.on(`socketMessage`, (message) => {
 		WS.send(message);
 	});
 });
+
+// update bot inventory volume property
+
+const updateBotInventory = () => {
+	console.log(`start bot inventory requesting`);
+	setInterval(async () => {
+		try {
+			const steamID = process.env.STEAM_BOT_ID;
+			const data = await requestUserInventory({ steamID });
+			if (!data.length) return console.log(`inventory request error`);
+			const items = data.map((item) => item.market_hash_name);
+			const query = `UPDATE market_items SET bot_volume = 0`;
+			await DB(query);
+			for (const item of items) {
+				const updateData = { bot_volume: 1 };
+				const query = `UPDATE market_items SET ? WHERE market_hash_name = ?`;
+				await DB(query, [ updateData, item ]);
+			}
+		} catch (error) {
+			console.log(error);
+		}
+	}, 60000);
+};
+
+updateBotInventory();
 
 app.listen(process.env.PORT);
